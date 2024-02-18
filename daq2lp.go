@@ -1,13 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"encoding/csv"
 	"io"
 	"strings"
 )
 
-func encodeDaq(f io.Reader, buf *bytes.Buffer) (error) {
+func encodeDaq(f io.Reader, buf io.StringWriter) error {
 	r := csv.NewReader(f)
 	r.ReuseRecord = true
 	header, err := r.Read()
@@ -16,60 +15,72 @@ func encodeDaq(f io.Reader, buf *bytes.Buffer) (error) {
 	}
 	cols := make([]string, len(header))
 	copy(cols, header) // needed because ReuseRecord == true
+
+	ignoreFields := strings.Split(*IGNORE_FIELDS, ",")
 	for rec, err := r.Read(); err == nil; rec, err = r.Read() {
 		// loop over all fields, create a new line for every module
 		curModule := ""
 		fields := ""
 		ts := ""
+		field_loop:
 		for i, fValue := range rec {
-			fName := cols[i]
-			if fName == "TimeStamp" {
+			colName := cols[i]
+			if colName == "TimeStamp" {
 				ts = strings.TrimSuffix(fValue, ".000000")
 				continue
 			}
-			if !strings.HasPrefix(fName, "LMU") {
+			if !strings.HasPrefix(colName, "LMU") {
 				continue
 			}
-			module, vName := moduleField(fName)
+			// fetch module and field name from LMU_<module>_<fieldName>
+			module, fName := moduleField(colName)
 			if curModule == "" {
 				curModule = module
-			} else if curModule != module {
+			}
+			// flush previous module data
+			if curModule != module {
+				// if no data, we simply update the curModule variable and carry on
 				if len(fields) == 0 {
 					curModule = module
 					continue
 				}
-				// flush current module values
+
+				// manually creating line protocol here
 				buf.WriteString("tigo,")
 				buf.WriteString("module=" + curModule + " ")
 				buf.WriteString(fields[:len(fields)-1] + " ")
 				buf.WriteString(ts + "\n")
+				
+				// reset for next module
 				fields = ""
 				curModule = module
 			}
-			// select fields to save
-			switch vName {
-			case "Status":
-				fallthrough
-			case "Flags":
-				fallthrough
-			case "RSSI":
-				fallthrough
-			case "ID":
-				fallthrough
-			case "Details":
-				fallthrough
-			case "BRSSI":
-				continue
+			// check if field needs to be skipped
+			for _, f := range ignoreFields {
+				if fName == f {
+					continue field_loop
+				}
 			}
 			if len(fValue) == 0 {
 				continue
 			}
-			fields += vName + "=" + fValue + ","
+			fields += fName + "=" + fValue + ","
 		}
+
+		if len(fields) == 0 {
+			continue
+		}
+
+		// flush last module values
+		buf.WriteString("tigo,")
+		buf.WriteString("module=" + curModule + " ")
+		buf.WriteString(fields[:len(fields)-1] + " ")
+		buf.WriteString(ts + "\n")
 	}
-	return nil
+	return err
 }
 
+// turns LMU_<module>_<fieldName> into (<module>, <fieldName>)
 func moduleField(s string) (module string, field string) {
 	x := strings.Split(s, "_")
 	return x[1], x[2]

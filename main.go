@@ -17,19 +17,11 @@ var INFLUX_URL = flag.String("influx-url", "", "influx api write endpoint")
 var INFLUX_TOKEN = flag.String("t", "", "influx api token")
 var INFLUX_ORG = flag.String("org", "", "influx organization")
 var INFLUX_BUCKET = flag.String("b", "", "influx bucket")
+var BUF_SIZE = flag.Int("buf-size", 350*37*150, "buffer size for the entire daq file.\nroughly set to n_entries * 150 * n_modules")
+var IGNORE_FIELDS = flag.String("ignore-fields", "", "comma separated string of fields to ignore.\nes: RSSI,BRSSI,Status")
 
 func main() {
 	flag.Parse()
-	postURL, err := url.Parse(*INFLUX_URL)
-	if err != nil || len(*INFLUX_URL) == 0 {
-		log("invalid or empty influx url, err:%v", err)
-		return
-	}
-	params := url.Values{}
-	params.Add("org", *INFLUX_ORG)
-	params.Add("bucket", *INFLUX_BUCKET)
-	params.Add("precision", "s")
-	postURL.RawQuery = params.Encode()
 
 	lastUpdateFile := path.Join(*DAQS_DIR, ".last-update")
 	var lastUpdate time.Time
@@ -71,10 +63,7 @@ func main() {
 	log("will update %v", daqs)
 	daqsDir := os.DirFS(*DAQS_DIR)
 	postFailed := false
-	// each lp line is about 130bytes long
-	// each daq file has about 350 entries
-	// each entry is converted into 37 lines
-	v := make([]byte, 350*37*130)
+	v := make([]byte, *BUF_SIZE)
 	buf := bytes.NewBuffer(v)
 	for _, fileName := range daqs {
 		f, err := daqsDir.Open(fileName)
@@ -86,7 +75,7 @@ func main() {
 		err = encodeDaq(f, buf)
 		f.Close()
 		if err != nil {
-			log("error encoding %s, skipping to next file", fileName)
+			log("error encoding %s, skipping to next file, err: %v", fileName, err)
 			continue
 		}
 
@@ -98,6 +87,18 @@ func main() {
 		// }
 		// continue
 		
+
+		postURL, err := url.Parse(*INFLUX_URL)
+		if err != nil || len(*INFLUX_URL) == 0 {
+			log("invalid or empty influx url, err:%v", err)
+			return
+		}
+		params := url.Values{}
+		params.Add("org", *INFLUX_ORG)
+		params.Add("bucket", *INFLUX_BUCKET)
+		params.Add("precision", "s")
+		postURL.RawQuery = params.Encode()
+
 		r, err := http.NewRequest(http.MethodPost, postURL.String(), buf)
 		if err != nil {
 			log("error creating POST request: %v", err)
